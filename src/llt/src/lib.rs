@@ -155,7 +155,10 @@ where
 
     // Check the error code to see if we failed to free the stack.
     if error_code != 0 {
-        panic!("Failed to free system provided stack. Last error code: {}", error_code);
+        panic!(
+            "Failed to free system provided stack. Last error code: {}",
+            error_code
+        );
     }
 }
 
