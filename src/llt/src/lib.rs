@@ -90,9 +90,13 @@ where
     use windows_sys::Win32::System::Memory::VirtualFree;
     use windows_sys::Win32::System::Threading::ExitThread;
 
+    // Used for panicking if we fail to free the stack.
+    use windows_sys::Win32::System::Diagnostics::Debug::GetLastError;
+    let mut error_code: u32 = 0;
+
     // We can't keep any variables that need to be dropped on the stack because we need to exit the
     // thread with ExitThread(). In this case any variables on the stack will not get dropped, which
-    // will cause a memory to leak.
+    // will cause a memory leak.
     let (entry, stack, stack_size) = *Box::from_raw(arg as *mut (T, *mut u8, usize));
 
     assert!(ENTRY.set(UnsafeCell::new(Entry(Box::new(entry)))).is_none());
@@ -122,23 +126,37 @@ where
         "xor eax, eax",
         "mov gs:[0x1748], eax",
         // Free system provided stack.
-        // TODO: Panic if error.
         "xor rdx, rdx",
         "mov r8d, 0x8000",
         "sub rsp, 32",
         "call {free}",
+        // Check return value, if non-zero, panic.
+        "test rax, rax",
+        "jnz 1f",
+        "call {get_last_error}",
+        "mov [rdi], eax",  // Store GetLastError's output in a variable
+        "jmp 2f",
+        "1:",
         // Run the entry.
         "call {run}",
         // Exit the thread.
         "xor ecx, ecx",
         "call {exit}",
+        // Definitions
         in("rax") stack,
         in("rdx") stack_size,
+        in("rdi") &mut error_code,
         free = sym VirtualFree,
+        get_last_error = sym GetLastError,
         run = sym run,
         exit = sym ExitThread,
         options(noreturn)
     );
+
+    // Check the error code to see if we failed to free the stack.
+    if error_code != 0 {
+        panic!("Failed to free system provided stack. Last error code: {}", error_code);
+    }
 }
 
 static ENTRY: Tls<UnsafeCell<Entry>> = Tls::new();
