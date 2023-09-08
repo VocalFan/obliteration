@@ -291,11 +291,7 @@ fn exec<E: ee::ExecutionEngine>(mut ee: E, arg: EntryArg) -> ExitCode {
     };
 
     // Set the guard page to be non-accessible
-    match MemoryManager::current().mprotect(
-        stack_and_guard,
-        guard_size,
-        MappingFlags::PROT_NONE,
-    ) {
+     match MemoryManager::current().mprotect(stack, guard_size, MappingFlags::PROT_NONE) {
         Ok(_) => (),
         Err(e) => {
             error!(e, "Guard protection failed");
