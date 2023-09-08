@@ -291,15 +291,6 @@ fn exec<E: ee::ExecutionEngine>(mut ee: E, arg: EntryArg) -> ExitCode {
     };
 
     // Set the guard page to be non-accessible
-    match MemoryManager::current().mprotect(stack.as_mut_ptr(), guard_size, PROT_NONE) {
-        Ok(_) => (),
-        Err(e) => {
-            error!(e, "Guard protection failed");
-            return ExitCode::FAILURE;
-        }
-    }
-
-    // Set the guard page to be non-accessible
     #[cfg(unix)]
     {
         use libc::PROT_NONE; // Import the constant for Unix systems
