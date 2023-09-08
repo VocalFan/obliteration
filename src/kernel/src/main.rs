@@ -291,7 +291,7 @@ fn exec<E: ee::ExecutionEngine>(mut ee: E, arg: EntryArg) -> ExitCode {
     };
 
     // Set the guard page to be non-accessible
-    match MemoryManager::current().mprotect(stack, guard_size, PROT_NONE) {
+    match MemoryManager::current().mprotect(stack.as_mut_ptr(), guard_size, PROT_NONE) {
         Ok(_) => (),
         Err(e) => {
             error!(e, "Guard protection failed");
@@ -299,8 +299,43 @@ fn exec<E: ee::ExecutionEngine>(mut ee: E, arg: EntryArg) -> ExitCode {
         }
     }
 
+    // Set the guard page to be non-accessible
+    #[cfg(unix)]
+    {
+        use libc::PROT_NONE;  // Import the constant for Unix systems
+        match MemoryManager::current().mprotect(stack.as_mut_ptr(), guard_size, PROT_NONE) {
+            Ok(_) => (),
+            Err(e) => {
+                error!(e, "Guard protection failed");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        use winapi::um::memoryapi::VirtualProtect;
+        use winapi::um::winnt::PAGE_NOACCESS;
+        let mut old_protect: u32 = 0;
+
+        let locked = unsafe {
+            VirtualProtect(
+                stack.as_mut_ptr() as *mut _,
+                guard_size,
+                PAGE_NOACCESS,
+                &mut old_protect as *mut u32,
+            )
+        };
+
+        if locked == 0 {
+            let e = std::io::Error::last_os_error();
+            error!(e, "Guard protection failed");
+            return ExitCode::FAILURE;
+        }
+    }
+
     // Skip the guard page in the pointer
-    let stack = unsafe { stack_and_guard.add(guard_page_size) };
+    let stack = unsafe { stack.add(guard_size) };
 
     // Start the application.
     info!("Starting application.");
