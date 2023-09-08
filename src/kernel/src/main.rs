@@ -267,12 +267,17 @@ fn main() -> ExitCode {
 
 fn exec<E: ee::ExecutionEngine>(mut ee: E, arg: EntryArg) -> ExitCode {
     // TODO: Check how the PS4 allocate the stack.
-    // TODO: We should allocate a guard page to catch stack overflow.
     info!("Allocating application stack.");
+
+    // Assign stack size with an extra page for guard
+    let stack_size = 0x200000;
+    let guard_size = MemoryManager::current().page_size();
+    // Combine both sizes into one
+    let total_size = stack_size + guard_size;
 
     let stack = match MemoryManager::current().mmap(
         0,
-        0x200000,
+        total_size,
         arg.stack_prot(),
         MappingFlags::MAP_ANON | MappingFlags::MAP_PRIVATE,
         -1,
@@ -280,10 +285,26 @@ fn exec<E: ee::ExecutionEngine>(mut ee: E, arg: EntryArg) -> ExitCode {
     ) {
         Ok(v) => v,
         Err(e) => {
-            error!(e, "Allocate failed");
+            error!(e, "Stack allocation failed");
             return ExitCode::FAILURE;
         }
     };
+
+    // Set the guard page to be non-accessible
+    match MemoryManager::current().mprotect(
+        stack_and_guard,
+        guard_size,
+        MappingFlags::PROT_NONE,
+    ) {
+        Ok(_) => (),
+        Err(e) => {
+            error!(e, "Guard protection failed");
+            return ExitCode::FAILURE;
+        }
+    }
+
+    // Skip the guard page in the pointer
+    let stack = unsafe { stack_and_guard.add(guard_page_size) };
 
     // Start the application.
     info!("Starting application.");
