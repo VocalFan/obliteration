@@ -3,7 +3,7 @@ use crate::ee::EntryArg;
 use crate::fs::{Fs, VPath};
 use crate::llvm::Llvm;
 use crate::log::{print, LOGGER};
-use crate::memory::{MappingFlags, MemoryManager};
+use crate::memory::{MappingFlags, MemoryManager, Protections};
 use crate::process::VProc;
 use crate::rtld::{ModuleFlags, RuntimeLinker};
 use crate::syscalls::Syscalls;
@@ -293,7 +293,6 @@ fn exec<E: ee::ExecutionEngine>(mut ee: E, arg: EntryArg) -> ExitCode {
     // Set the guard page to be non-accessible
     #[cfg(unix)]
     {
-        use libc::PROT_NONE; // Import the constant for Unix systems
         match MemoryManager::current().mprotect(stack.as_mut_ptr(), guard_size, PROT_NONE) {
             Ok(_) => (),
             Err(e) => {
