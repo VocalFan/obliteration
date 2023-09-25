@@ -149,72 +149,79 @@ impl Pkg {
         let num_threads = std::cmp::max(2, num_cpus::get() / 2);
 
         // Convert the range into a Vec and then use par_chunks
-        (0..num_entries).collect::<Vec<_>>().par_chunks(num_threads).try_for_each(|chunk| {
-            for &num in chunk {
-                // Check offset.
-                let offset = self.header.table_offset() + num * Entry::RAW_SIZE;
-                let raw = match self.raw.get(offset..(offset + Entry::RAW_SIZE)) {
-                    Some(v) => v,
-                    None => return Err(ExtractError::InvalidEntryOffset(num)),
-                };
+        (0..num_entries)
+            .collect::<Vec<_>>()
+            .par_chunks(num_threads)
+            .try_for_each(|chunk| {
+                for &num in chunk {
+                    // Check offset.
+                    let offset = self.header.table_offset() + num * Entry::RAW_SIZE;
+                    let raw = match self.raw.get(offset..(offset + Entry::RAW_SIZE)) {
+                        Some(v) => v,
+                        None => return Err(ExtractError::InvalidEntryOffset(num)),
+                    };
 
-                // Read entry.
-                let entry = unsafe { Entry::read(raw) };
+                    // Read entry.
+                    let entry = unsafe { Entry::read(raw) };
 
-                // Get file path.
-                let path = match entry.to_path(dir.as_ref()) {
-                    Some(v) => v,
-                    None => continue,
-                };
+                    // Get file path.
+                    let path = match entry.to_path(dir.as_ref()) {
+                        Some(v) => v,
+                        None => continue,
+                    };
 
-                // Check if we have a decryption key.
-                if entry.is_encrypted() && (entry.key_index() != 3 || self.entry_key3.is_empty()) {
-                    return Err(ExtractError::NoEntryDecryptionKey(num));
-                }
+                    // Check if we have a decryption key.
+                    if entry.is_encrypted()
+                        && (entry.key_index() != 3 || self.entry_key3.is_empty())
+                    {
+                        return Err(ExtractError::NoEntryDecryptionKey(num));
+                    }
 
-                // Get entry data.
-                let offset = entry.data_offset();
-                let size = if entry.is_encrypted() {
-                    (entry.data_size() + 15) & !15 // We need to include padding.
-                } else {
-                    entry.data_size()
-                };
+                    // Get entry data.
+                    let offset = entry.data_offset();
+                    let size = if entry.is_encrypted() {
+                        (entry.data_size() + 15) & !15 // We need to include padding.
+                    } else {
+                        entry.data_size()
+                    };
 
-                let data = match self.raw.get(offset..(offset + size)) {
-                    Some(v) => v,
-                    None => return Err(ExtractError::InvalidEntryDataOffset(num)),
-                };
+                    let data = match self.raw.get(offset..(offset + size)) {
+                        Some(v) => v,
+                        None => return Err(ExtractError::InvalidEntryDataOffset(num)),
+                    };
 
-                // Report status.
-                let name = CString::new(path.to_string_lossy().as_ref()).unwrap();
-                status(name.as_ptr(), size as u64, 0, ud);
+                    // Report status.
+                    let name = CString::new(path.to_string_lossy().as_ref()).unwrap();
+                    status(name.as_ptr(), size as u64, 0, ud);
 
-                // Create a directory for destination file.
-                let dir = path.parent().unwrap();
-                if let Err(e) = create_dir_all(dir) {
-                    return Err(ExtractError::CreateDirectoryFailed(dir.to_path_buf(), e));
-                }
+                    // Create a directory for destination file.
+                    let dir = path.parent().unwrap();
+                    if let Err(e) = create_dir_all(dir) {
+                        return Err(ExtractError::CreateDirectoryFailed(dir.to_path_buf(), e));
+                    }
 
-                // Open destination file.
-                let mut file = match File::create(&path) {
-                    Ok(v) => v,
-                    Err(e) => return Err(ExtractError::CreateEntryFailed(path, e)),
-                };
+                    // Open destination file.
+                    let mut file = match File::create(&path) {
+                        Ok(v) => v,
+                        Err(e) => return Err(ExtractError::CreateEntryFailed(path, e)),
+                    };
 
-                // Dump entry data.
-                if entry.is_encrypted() {
-                    if let Err(e) = self.decrypt_entry_data(&entry, data, |b| file.write_all(&b)) {
+                    // Dump entry data.
+                    if entry.is_encrypted() {
+                        if let Err(e) =
+                            self.decrypt_entry_data(&entry, data, |b| file.write_all(&b))
+                        {
+                            return Err(ExtractError::WriteEntryFailed(path, e));
+                        }
+                    } else if let Err(e) = file.write_all(data) {
                         return Err(ExtractError::WriteEntryFailed(path, e));
                     }
-                } else if let Err(e) = file.write_all(data) {
-                    return Err(ExtractError::WriteEntryFailed(path, e));
-                }
 
-                // Report status.
-                status(name.as_ptr(), size as u64, size as u64, ud);
-            }
-            Ok(())
-        })
+                    // Report status.
+                    status(name.as_ptr(), size as u64, size as u64, ud);
+                }
+                Ok(())
+            })
     }
 
     fn extract_pfs<D: AsRef<Path>>(
