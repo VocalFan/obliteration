@@ -146,7 +146,7 @@ impl Pkg {
         ud: *mut c_void,
     ) -> Result<(), ExtractError> {
         let num_entries = self.header.entry_count();
-        let num_threads = std::cmp::max(2, num_cpus::get() / 2);
+        let num_threads = std::cmp::max(2, num_cpus::get() / 2); // Use half of available threads on CPU, with 2 threads minimum.
 
         // Convert the range into a Vec and then use par_chunks
         (0..num_entries)
