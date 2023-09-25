@@ -4,6 +4,7 @@ use self::keys::{fake_pfs_key, pkg_key3};
 use aes::cipher::generic_array::GenericArray;
 use aes::cipher::{BlockDecryptMut, KeyIvInit};
 use param::Param;
+use rayon::prelude::*;
 use sha2::Digest;
 use std::error::Error;
 use std::ffi::{c_void, CStr, CString};
@@ -13,6 +14,7 @@ use std::io::{Cursor, Read, Write};
 use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
+use std::sync::Mutex;
 use thiserror::Error;
 
 pub mod entry;
@@ -143,73 +145,76 @@ impl Pkg {
         status: extern "C" fn(*const c_char, u64, u64, ud: *mut c_void),
         ud: *mut c_void,
     ) -> Result<(), ExtractError> {
-        for num in 0..self.header.entry_count() {
-            // Check offset.
-            let offset = self.header.table_offset() + num * Entry::RAW_SIZE;
-            let raw = match self.raw.get(offset..(offset + Entry::RAW_SIZE)) {
-                Some(v) => v,
-                None => return Err(ExtractError::InvalidEntryOffset(num)),
-            };
+        let num_entries = self.header.entry_count();
+        let num_threads = std::cmp::max(2, num_cpus::get() / 2);
 
-            // Read entry.
-            let entry = unsafe { Entry::read(raw) };
+        // Convert the range into a Vec and then use par_chunks
+        (0..num_entries).collect::<Vec<_>>().par_chunks(num_threads).try_for_each(|chunk| {
+            for &num in chunk {
+                // Check offset.
+                let offset = self.header.table_offset() + num * Entry::RAW_SIZE;
+                let raw = match self.raw.get(offset..(offset + Entry::RAW_SIZE)) {
+                    Some(v) => v,
+                    None => return Err(ExtractError::InvalidEntryOffset(num)),
+                };
 
-            // Get file path.
-            let path = match entry.to_path(dir.as_ref()) {
-                Some(v) => v,
-                None => continue,
-            };
+                // Read entry.
+                let entry = unsafe { Entry::read(raw) };
 
-            // Check if we have a decryption key.
-            if entry.is_encrypted() && (entry.key_index() != 3 || self.entry_key3.is_empty()) {
-                return Err(ExtractError::NoEntryDecryptionKey(num));
-            }
+                // Get file path.
+                let path = match entry.to_path(dir.as_ref()) {
+                    Some(v) => v,
+                    None => continue,
+                };
 
-            // Get entry data.
-            let offset = entry.data_offset();
-            let size = if entry.is_encrypted() {
-                (entry.data_size() + 15) & !15 // We need to include padding.
-            } else {
-                entry.data_size()
-            };
+                // Check if we have a decryption key.
+                if entry.is_encrypted() && (entry.key_index() != 3 || self.entry_key3.is_empty()) {
+                    return Err(ExtractError::NoEntryDecryptionKey(num));
+                }
 
-            let data = match self.raw.get(offset..(offset + size)) {
-                Some(v) => v,
-                None => return Err(ExtractError::InvalidEntryDataOffset(num)),
-            };
+                // Get entry data.
+                let offset = entry.data_offset();
+                let size = if entry.is_encrypted() {
+                    (entry.data_size() + 15) & !15 // We need to include padding.
+                } else {
+                    entry.data_size()
+                };
 
-            // Report status.
-            let name = CString::new(path.to_string_lossy().as_ref()).unwrap();
+                let data = match self.raw.get(offset..(offset + size)) {
+                    Some(v) => v,
+                    None => return Err(ExtractError::InvalidEntryDataOffset(num)),
+                };
 
-            status(name.as_ptr(), size as u64, 0, ud);
+                // Report status.
+                let name = CString::new(path.to_string_lossy().as_ref()).unwrap();
+                status(name.as_ptr(), size as u64, 0, ud);
 
-            // Create a directory for destination file.
-            let dir = path.parent().unwrap();
+                // Create a directory for destination file.
+                let dir = path.parent().unwrap();
+                if let Err(e) = create_dir_all(dir) {
+                    return Err(ExtractError::CreateDirectoryFailed(dir.to_path_buf(), e));
+                }
 
-            if let Err(e) = create_dir_all(dir) {
-                return Err(ExtractError::CreateDirectoryFailed(dir.to_path_buf(), e));
-            }
+                // Open destination file.
+                let mut file = match File::create(&path) {
+                    Ok(v) => v,
+                    Err(e) => return Err(ExtractError::CreateEntryFailed(path, e)),
+                };
 
-            // Open destination file.
-            let mut file = match File::create(&path) {
-                Ok(v) => v,
-                Err(e) => return Err(ExtractError::CreateEntryFailed(path, e)),
-            };
-
-            // Dump entry data.
-            if entry.is_encrypted() {
-                if let Err(e) = self.decrypt_entry_data(&entry, data, |b| file.write_all(&b)) {
+                // Dump entry data.
+                if entry.is_encrypted() {
+                    if let Err(e) = self.decrypt_entry_data(&entry, data, |b| file.write_all(&b)) {
+                        return Err(ExtractError::WriteEntryFailed(path, e));
+                    }
+                } else if let Err(e) = file.write_all(data) {
                     return Err(ExtractError::WriteEntryFailed(path, e));
                 }
-            } else if let Err(e) = file.write_all(data) {
-                return Err(ExtractError::WriteEntryFailed(path, e));
+
+                // Report status.
+                status(name.as_ptr(), size as u64, size as u64, ud);
             }
-
-            // Report status.
-            status(name.as_ptr(), size as u64, size as u64, ud);
-        }
-
-        Ok(())
+            Ok(())
+        })
     }
 
     fn extract_pfs<D: AsRef<Path>>(
