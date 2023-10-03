@@ -12,6 +12,7 @@ fs = { path = "../fs" }
 memmap2 = "0.8"
 param = { path = "../param" }
 pfs = { path = "../pfs" }
+rayon = "1.8"
 rsa = "0.9"
 sha2 = "0.10"
 thiserror = "1.0"
